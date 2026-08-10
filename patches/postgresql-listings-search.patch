@@ -1,0 +1,728 @@
+From 1a33390dba049c7b07d33650a39cf48e5d61a0c0 Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Sun, 9 Aug 2026 18:21:59 +0300
+Subject: [PATCH] add PostgreSQL listings search
+
+---
+ cmd/demo/main.go                              | 25 +++++-
+ deploy/demo.yml                               |  7 ++
+ docker-compose.yml                            |  3 +
+ docs/docs.go                                  | 30 ++++++-
+ docs/swagger.json                             | 32 +++++++-
+ docs/swagger.yaml                             | 21 ++++-
+ internal/controllers/listing.go               | 65 +++++++++++++++-
+ internal/controllers/listing_test.go          | 28 ++++++-
+ internal/domains/listing.go                   |  8 +-
+ internal/domains/listing_entity.go            |  6 ++
+ internal/domains/listing_test.go              | 17 ++--
+ internal/repositories/listing.go              | 78 ++++++++++++-------
+ .../repositories/listing_integration_test.go  | 54 +++++++++++++
+ internal/storage/demo_seed.go                 | 21 +++++
+ internal/storage/seeds/demo_listings.sql      |  9 +++
+ migrations/000002_listings.down.sql           |  1 +
+ migrations/000002_listings.up.sql             |  8 ++
+ 17 files changed, 366 insertions(+), 47 deletions(-)
+ create mode 100644 internal/repositories/listing_integration_test.go
+ create mode 100644 internal/storage/demo_seed.go
+ create mode 100644 internal/storage/seeds/demo_listings.sql
+ create mode 100644 migrations/000002_listings.down.sql
+ create mode 100644 migrations/000002_listings.up.sql
+
+diff --git a/cmd/demo/main.go b/cmd/demo/main.go
+index c6f556f..9c20511 100644
+--- a/cmd/demo/main.go
++++ b/cmd/demo/main.go
+@@ -13,6 +13,7 @@ import (
+ 	"github.com/Vanady39/cluer/internal/logger"
+ 	"github.com/Vanady39/cluer/internal/repositories"
+ 	"github.com/Vanady39/cluer/internal/server"
++	"github.com/Vanady39/cluer/internal/storage"
+ )
+ 
+ //	@title			Cluer Demo Site
+@@ -27,7 +28,29 @@ func main() {
+ 	defaultLogger := logger.New(cfg.Logger.Default.Level)
+ 	defaultLogger.Info().Msg("Logger setup successfully")
+ 
+-	listingDomain := domains.NewListingDomain(repositories.NewListingRepository())
++	if cfg.PostgresConfig == nil {
++		defaultLogger.Fatal().Msg("postgres config is required for the demo service")
++	}
++
++	startupCtx, startupCancel := context.WithTimeout(context.Background(), time.Minute)
++	defer startupCancel()
++
++	dsn := cfg.PostgresConfig.GetDSN()
++	if err := storage.Migrate(dsn, defaultLogger); err != nil {
++		defaultLogger.Fatal().Err(err).Str("dsn", cfg.PostgresConfig.SafeDSN()).Msg("Migrations failed")
++	}
++
++	pool, err := storage.Connect(startupCtx, dsn, defaultLogger)
++	if err != nil {
++		defaultLogger.Fatal().Err(err).Str("dsn", cfg.PostgresConfig.SafeDSN()).Msg("Database connection failed")
++	}
++	defer pool.Close()
++
++	if err := storage.SeedDemoListings(startupCtx, pool); err != nil {
++		defaultLogger.Fatal().Err(err).Msg("Demo listings seed failed")
++	}
++
++	listingDomain := domains.NewListingDomain(repositories.NewListingRepository(pool))
+ 	userDomain := domains.NewUserDomain(repositories.NewUserRepository())
+ 
+ 	srvLogger := logger.New(cfg.GetLoggerConfig("server").Level)
+diff --git a/deploy/demo.yml b/deploy/demo.yml
+index 99289d0..8349076 100644
+--- a/deploy/demo.yml
++++ b/deploy/demo.yml
+@@ -1,6 +1,13 @@
+ server:
+   address: 0.0.0.0:8080
+ 
++postgres:
++  address: postgres:5432
++  user: cluer
++  password: cluer_local_dev
++  dbname: cluer
++  sslmode: disable
++
+ logger:
+   default:
+     level: info
+diff --git a/docker-compose.yml b/docker-compose.yml
+index db9e515..5219ddf 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -41,6 +41,9 @@ services:
+       context: .
+       args:
+         SERVICE: demo
++    depends_on:
++      postgres:
++        condition: service_healthy
+     volumes:
+       - ./deploy/demo.yml:/run/secrets/cluer.yml:ro
+     ports:
+diff --git a/docs/docs.go b/docs/docs.go
+index be49fb2..7b7d224 100644
+--- a/docs/docs.go
++++ b/docs/docs.go
+@@ -150,14 +150,34 @@ const docTemplate = `{
+         },
+         "/listings": {
+             "get": {
+-                "description": "Returns every available listing",
++                "description": "Returns listings, optionally filtering by title or description",
+                 "produces": [
+                     "application/json"
+                 ],
+                 "tags": [
+                     "Listings"
+                 ],
+-                "summary": "Get all listings",
++                "summary": "List and search listings",
++                "parameters": [
++                    {
++                        "type": "string",
++                        "description": "Case-insensitive text search",
++                        "name": "q",
++                        "in": "query"
++                    },
++                    {
++                        "type": "integer",
++                        "description": "Result limit (1-50, default 20)",
++                        "name": "limit",
++                        "in": "query"
++                    },
++                    {
++                        "type": "integer",
++                        "description": "Result offset (default 0)",
++                        "name": "offset",
++                        "in": "query"
++                    }
++                ],
+                 "responses": {
+                     "200": {
+                         "description": "OK",
+@@ -165,6 +185,12 @@ const docTemplate = `{
+                             "$ref": "#/definitions/github_com_Vanady39_cluer_internal_models_response.GetListingsResponse"
+                         }
+                     },
++                    "400": {
++                        "description": "Bad Request",
++                        "schema": {
++                            "$ref": "#/definitions/github_com_Vanady39_cluer_internal_models.HTTPError"
++                        }
++                    },
+                     "500": {
+                         "description": "Internal Server Error",
+                         "schema": {
+diff --git a/docs/swagger.json b/docs/swagger.json
+index e7f432d..b7ad61b 100644
+--- a/docs/swagger.json
++++ b/docs/swagger.json
+@@ -144,14 +144,34 @@
+         },
+         "/listings": {
+             "get": {
+-                "description": "Returns every available listing",
++                "description": "Returns listings, optionally filtering by title or description",
+                 "produces": [
+                     "application/json"
+                 ],
+                 "tags": [
+                     "Listings"
+                 ],
+-                "summary": "Get all listings",
++                "summary": "List and search listings",
++                "parameters": [
++                    {
++                        "type": "string",
++                        "description": "Case-insensitive text search",
++                        "name": "q",
++                        "in": "query"
++                    },
++                    {
++                        "type": "integer",
++                        "description": "Result limit (1-50, default 20)",
++                        "name": "limit",
++                        "in": "query"
++                    },
++                    {
++                        "type": "integer",
++                        "description": "Result offset (default 0)",
++                        "name": "offset",
++                        "in": "query"
++                    }
++                ],
+                 "responses": {
+                     "200": {
+                         "description": "OK",
+@@ -159,6 +179,12 @@
+                             "$ref": "#/definitions/github_com_Vanady39_cluer_internal_models_response.GetListingsResponse"
+                         }
+                     },
++                    "400": {
++                        "description": "Bad Request",
++                        "schema": {
++                            "$ref": "#/definitions/github_com_Vanady39_cluer_internal_models.HTTPError"
++                        }
++                    },
+                     "500": {
+                         "description": "Internal Server Error",
+                         "schema": {
+@@ -1743,4 +1769,4 @@
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/docs/swagger.yaml b/docs/swagger.yaml
+index c975ad8..3cb809a 100644
+--- a/docs/swagger.yaml
++++ b/docs/swagger.yaml
+@@ -599,7 +599,20 @@ paths:
+       - Runtime
+   /listings:
+     get:
+-      description: Returns every available listing
++      description: Returns listings, optionally filtering by title or description
++      parameters:
++      - description: Case-insensitive text search
++        in: query
++        name: q
++        type: string
++      - description: Result limit (1-50, default 20)
++        in: query
++        name: limit
++        type: integer
++      - description: Result offset (default 0)
++        in: query
++        name: offset
++        type: integer
+       produces:
+       - application/json
+       responses:
+@@ -607,11 +620,15 @@ paths:
+           description: OK
+           schema:
+             $ref: '#/definitions/github_com_Vanady39_cluer_internal_models_response.GetListingsResponse'
++        "400":
++          description: Bad Request
++          schema:
++            $ref: '#/definitions/github_com_Vanady39_cluer_internal_models.HTTPError'
+         "500":
+           description: Internal Server Error
+           schema:
+             $ref: '#/definitions/github_com_Vanady39_cluer_internal_models.HTTPError'
+-      summary: Get all listings
++      summary: List and search listings
+       tags:
+       - Listings
+   /resolve:
+diff --git a/internal/controllers/listing.go b/internal/controllers/listing.go
+index 9d814a8..9a279f0 100644
+--- a/internal/controllers/listing.go
++++ b/internal/controllers/listing.go
+@@ -1,13 +1,22 @@
+ package controllers
+ 
+ import (
++	"errors"
++	"fmt"
+ 	"net/http"
++	"strconv"
++	"strings"
+ 
+ 	"github.com/Vanady39/cluer/internal/domains"
+ 	"github.com/Vanady39/cluer/internal/models/response"
+ 	"github.com/gin-gonic/gin"
+ )
+ 
++const (
++	defaultListingsLimit = 20
++	maxListingsLimit     = 50
++)
++
+ type (
+ 	ListingController struct {
+ 		domain domains.ListingDomainInterface
+@@ -24,15 +33,25 @@ func NewListingController(domain domains.ListingDomainInterface) *ListingControl
+ 
+ // GetListings godoc
+ //
+-//	@Summary		Get all listings
+-//	@Description	Returns every available listing
++//	@Summary		List and search listings
++//	@Description	Returns listings, optionally filtering by title or description
+ //	@Tags			Listings
+ //	@Produce		json
++//	@Param			q		query	string	false	"Case-insensitive text search"
++//	@Param			limit	query	int		false	"Result limit (1-50, default 20)"
++//	@Param			offset	query	int		false	"Result offset (default 0)"
+ //	@Success		200	{object}	response.GetListingsResponse
++//	@Failure		400	{object}	github_com_Vanady39_cluer_internal_models.HTTPError
+ //	@Failure		500	{object}	github_com_Vanady39_cluer_internal_models.HTTPError
+ //	@Router			/listings [get]
+ func (lc *ListingController) GetListings(ctx *gin.Context) {
+-	listings, err := lc.domain.GetListings(ctx.Request.Context())
++	filter, err := listingFilter(ctx)
++	if err != nil {
++		ctx.Error(err)
++		return
++	}
++
++	listings, err := lc.domain.GetListings(ctx.Request.Context(), filter)
+ 	if err != nil {
+ 		ctx.Error(err)
+ 		return
+@@ -40,3 +59,43 @@ func (lc *ListingController) GetListings(ctx *gin.Context) {
+ 
+ 	ctx.JSON(http.StatusOK, response.NewGetListingsResponse(listings))
+ }
++
++func listingFilter(ctx *gin.Context) (domains.ListingFilter, error) {
++	limit, err := optionalListingQueryInt(ctx, "limit", defaultListingsLimit, 1, maxListingsLimit)
++	if err != nil {
++		return domains.ListingFilter{}, err
++	}
++
++	offset, err := optionalListingQueryInt(ctx, "offset", 0, 0, 0)
++	if err != nil {
++		return domains.ListingFilter{}, err
++	}
++
++	return domains.ListingFilter{
++		Query:  strings.TrimSpace(ctx.Query("q")),
++		Limit:  limit,
++		Offset: offset,
++	}, nil
++}
++
++func optionalListingQueryInt(ctx *gin.Context, name string, defaultValue, minValue, maxValue int) (int, error) {
++	raw, present := ctx.GetQuery(name)
++	if !present {
++		return defaultValue, nil
++	}
++
++	value, err := strconv.Atoi(raw)
++	if err != nil || value < minValue || (maxValue > 0 && value > maxValue) {
++		message := fmt.Sprintf("%s must be an integer greater than or equal to %d", name, minValue)
++		if maxValue > 0 {
++			message = fmt.Sprintf("%s must be an integer between %d and %d", name, minValue, maxValue)
++		}
++		return 0, &BindingError{
++			Err:  errors.New(message),
++			Zone: Query,
++			Code: http.StatusBadRequest,
++		}
++	}
++
++	return value, nil
++}
+diff --git a/internal/controllers/listing_test.go b/internal/controllers/listing_test.go
+index 5023db4..00e5b07 100644
+--- a/internal/controllers/listing_test.go
++++ b/internal/controllers/listing_test.go
+@@ -15,9 +15,11 @@ import (
+ type stubListingDomain struct {
+ 	listings []domains.Listing
+ 	err      error
++	filter   domains.ListingFilter
+ }
+ 
+-func (s *stubListingDomain) GetListings(_ context.Context) ([]domains.Listing, error) {
++func (s *stubListingDomain) GetListings(_ context.Context, filter domains.ListingFilter) ([]domains.Listing, error) {
++	s.filter = filter
+ 	if s.err != nil {
+ 		return nil, s.err
+ 	}
+@@ -43,6 +45,15 @@ func TestListingController_GetListings(t *testing.T) {
+ 			`{"data":[{"id":1,"title":"iPhone","description":"как новый","price":95000,"imageUrl":"https://x/i.png"}]}`,
+ 			rec.Body.String(),
+ 		)
++		assert.Equal(t, domains.ListingFilter{Limit: 20}, domain.filter)
++	})
++
++	t.Run("trims q and passes pagination filter to the domain", func(t *testing.T) {
++		domain := &stubListingDomain{}
++		rec := doJSON(t, listingRouter(domain), http.MethodGet, "/listings?q=+iPhone+&limit=5&offset=2", nil)
++
++		require.Equal(t, http.StatusOK, rec.Code)
++		assert.Equal(t, domains.ListingFilter{Query: "iPhone", Limit: 5, Offset: 2}, domain.filter)
+ 	})
+ 
+ 	t.Run("empty result still returns a data array", func(t *testing.T) {
+@@ -58,4 +69,19 @@ func TestListingController_GetListings(t *testing.T) {
+ 		require.Equal(t, http.StatusInternalServerError, rec.Code)
+ 		decodeHTTPError(t, rec)
+ 	})
++
++	for _, path := range []string{
++		"/listings?limit=0",
++		"/listings?limit=51",
++		"/listings?limit=invalid",
++		"/listings?offset=-1",
++		"/listings?offset=invalid",
++	} {
++		t.Run("invalid pagination returns 400: "+path, func(t *testing.T) {
++			rec := doJSON(t, listingRouter(&stubListingDomain{}), http.MethodGet, path, nil)
++
++			require.Equal(t, http.StatusBadRequest, rec.Code)
++			decodeHTTPError(t, rec)
++		})
++	}
+ }
+diff --git a/internal/domains/listing.go b/internal/domains/listing.go
+index 0f19bc6..cfc26d9 100644
+--- a/internal/domains/listing.go
++++ b/internal/domains/listing.go
+@@ -8,11 +8,11 @@ type (
+ 	}
+ 
+ 	ListingDomainInterface interface {
+-		GetListings(context.Context) ([]Listing, error)
++		GetListings(context.Context, ListingFilter) ([]Listing, error)
+ 	}
+ 
+ 	ListingRepositoryInterface interface {
+-		GetListings(context.Context) ([]Listing, error)
++		GetListings(context.Context, ListingFilter) ([]Listing, error)
+ 	}
+ )
+ 
+@@ -20,6 +20,6 @@ func NewListingDomain(repo ListingRepositoryInterface) *ListingDomain {
+ 	return &ListingDomain{repo: repo}
+ }
+ 
+-func (ld *ListingDomain) GetListings(ctx context.Context) ([]Listing, error) {
+-	return ld.repo.GetListings(ctx)
++func (ld *ListingDomain) GetListings(ctx context.Context, filter ListingFilter) ([]Listing, error) {
++	return ld.repo.GetListings(ctx, filter)
+ }
+diff --git a/internal/domains/listing_entity.go b/internal/domains/listing_entity.go
+index d006df6..7a0b418 100644
+--- a/internal/domains/listing_entity.go
++++ b/internal/domains/listing_entity.go
+@@ -7,3 +7,9 @@ type Listing struct {
+ 	Price       int64
+ 	ImageURL    string
+ }
++
++type ListingFilter struct {
++	Query  string
++	Limit  int
++	Offset int
++}
+diff --git a/internal/domains/listing_test.go b/internal/domains/listing_test.go
+index 7508636..ff5f2a1 100644
+--- a/internal/domains/listing_test.go
++++ b/internal/domains/listing_test.go
+@@ -10,9 +10,11 @@ import (
+ type listingRepositoryStub struct {
+ 	listings []Listing
+ 	err      error
++	filter   ListingFilter
+ }
+ 
+-func (s listingRepositoryStub) GetListings(context.Context) ([]Listing, error) {
++func (s *listingRepositoryStub) GetListings(_ context.Context, filter ListingFilter) ([]Listing, error) {
++	s.filter = filter
+ 	return s.listings, s.err
+ }
+ 
+@@ -26,9 +28,11 @@ func TestListingServiceGetListings(t *testing.T) {
+ 			ImageURL:    "https://example.com/iphone.png",
+ 		},
+ 	}
+-	service := NewListingDomain(listingRepositoryStub{listings: expected})
++	repo := &listingRepositoryStub{listings: expected}
++	service := NewListingDomain(repo)
++	filter := ListingFilter{Query: "iphone", Limit: 5, Offset: 2}
+ 
+-	actual, err := service.GetListings(context.Background())
++	actual, err := service.GetListings(context.Background(), filter)
+ 	if err != nil {
+ 		t.Fatalf("GetListings() returned an unexpected error: %v", err)
+ 	}
+@@ -36,13 +40,16 @@ func TestListingServiceGetListings(t *testing.T) {
+ 	if !reflect.DeepEqual(actual, expected) {
+ 		t.Fatalf("GetListings() = %#v, want %#v", actual, expected)
+ 	}
++	if !reflect.DeepEqual(repo.filter, filter) {
++		t.Fatalf("repository filter = %#v, want %#v", repo.filter, filter)
++	}
+ }
+ 
+ func TestListingServiceGetListingsReturnsRepositoryError(t *testing.T) {
+ 	expectedErr := errors.New("repository error")
+-	service := NewListingDomain(listingRepositoryStub{err: expectedErr})
++	service := NewListingDomain(&listingRepositoryStub{err: expectedErr})
+ 
+-	_, err := service.GetListings(context.Background())
++	_, err := service.GetListings(context.Background(), ListingFilter{Limit: 20})
+ 	if !errors.Is(err, expectedErr) {
+ 		t.Fatalf("GetListings() error = %v, want %v", err, expectedErr)
+ 	}
+diff --git a/internal/repositories/listing.go b/internal/repositories/listing.go
+index 4cf5755..2fc76b7 100644
+--- a/internal/repositories/listing.go
++++ b/internal/repositories/listing.go
+@@ -4,38 +4,64 @@ import (
+ 	"context"
+ 
+ 	"github.com/Vanady39/cluer/internal/domains"
++	"github.com/jackc/pgx/v5/pgxpool"
+ )
+ 
+-type (
+-	ListingRepository struct {
+-		listings []domains.Listing
++type ListingRepository struct {
++	pool *pgxpool.Pool
++}
++
++func NewListingRepository(pool *pgxpool.Pool) *ListingRepository {
++	return &ListingRepository{pool: pool}
++}
++
++func (lr *ListingRepository) GetListings(ctx context.Context, filter domains.ListingFilter) ([]domains.Listing, error) {
++	rows, err := lr.pool.Query(ctx, `
++		SELECT id, title, description, price, image_url
++		FROM listings
++		WHERE $1 = ''
++		   OR title ILIKE '%' || $1 || '%'
++		   OR description ILIKE '%' || $1 || '%'
++		ORDER BY id DESC
++		LIMIT $2 OFFSET $3`, filter.Query, filter.Limit, filter.Offset)
++	if err != nil {
++		return nil, &domains.RepositoryError{
++			Err:       err,
++			EntityRef: "listings",
++			Operation: domains.Retrieve,
++			Reason:    domains.QueryError,
++		}
+ 	}
+-)
++	defer rows.Close()
+ 
+-func NewListingRepository() *ListingRepository {
+-	return &ListingRepository{
+-		listings: []domains.Listing{
+-			{
+-				ID:          1,
+-				Title:       "iPhone 15 Pro",
+-				Description: "Телефон в отличном состоянии",
+-				Price:       95000,
+-				ImageURL:    "https://example.com/iphone.png",
+-			},
+-			{
+-				ID:          2,
+-				Title:       "Игровое кресло",
+-				Description: "Использовалось полгода",
+-				Price:       15000,
+-				ImageURL:    "https://example.com/chair.png",
+-			},
+-		},
++	listings := make([]domains.Listing, 0)
++	for rows.Next() {
++		listing := domains.Listing{}
++		if err := rows.Scan(
++			&listing.ID,
++			&listing.Title,
++			&listing.Description,
++			&listing.Price,
++			&listing.ImageURL,
++		); err != nil {
++			return nil, &domains.RepositoryError{
++				Err:       err,
++				EntityRef: "listings",
++				Operation: domains.Retrieve,
++				Reason:    domains.QueryError,
++			}
++		}
++		listings = append(listings, listing)
+ 	}
+-}
+ 
+-func (lr *ListingRepository) GetListings(_ context.Context) ([]domains.Listing, error) {
+-	listings := make([]domains.Listing, len(lr.listings))
+-	copy(listings, lr.listings)
++	if err := rows.Err(); err != nil {
++		return nil, &domains.RepositoryError{
++			Err:       err,
++			EntityRef: "listings",
++			Operation: domains.Retrieve,
++			Reason:    domains.QueryError,
++		}
++	}
+ 
+ 	return listings, nil
+ }
+diff --git a/internal/repositories/listing_integration_test.go b/internal/repositories/listing_integration_test.go
+new file mode 100644
+index 0000000..5744295
+--- /dev/null
++++ b/internal/repositories/listing_integration_test.go
+@@ -0,0 +1,54 @@
++package repositories_test
++
++import (
++	"context"
++	"os"
++	"testing"
++
++	"github.com/Vanady39/cluer/internal/domains"
++	"github.com/Vanady39/cluer/internal/repositories"
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestListingRepositorySearch(t *testing.T) {
++	dsn := os.Getenv("CLUER_TEST_DATABASE_URL")
++	if dsn == "" {
++		t.Skip("set CLUER_TEST_DATABASE_URL to run PostgreSQL integration tests")
++	}
++
++	ctx := context.Background()
++	pool, err := pgxpool.New(ctx, dsn)
++	require.NoError(t, err)
++	t.Cleanup(pool.Close)
++
++	repo := repositories.NewListingRepository(pool)
++
++	t.Run("empty q returns all listings", func(t *testing.T) {
++		listings, err := repo.GetListings(ctx, domains.ListingFilter{Limit: 20})
++		require.NoError(t, err)
++		assert.NotEmpty(t, listings)
++	})
++
++	t.Run("title search is case-insensitive", func(t *testing.T) {
++		listings, err := repo.GetListings(ctx, domains.ListingFilter{Query: "IPHONE", Limit: 20})
++		require.NoError(t, err)
++		require.Len(t, listings, 1)
++		assert.Equal(t, "iPhone 15 Pro", listings[0].Title)
++	})
++
++	t.Run("description search finds a matching listing", func(t *testing.T) {
++		listings, err := repo.GetListings(ctx, domains.ListingFilter{Query: "ЗАВОДСКОЙ УПАКОВКЕ", Limit: 20})
++		require.NoError(t, err)
++		require.Len(t, listings, 1)
++		assert.Equal(t, "Samsung Galaxy S24", listings[0].Title)
++	})
++
++	t.Run("no match returns an empty array", func(t *testing.T) {
++		listings, err := repo.GetListings(ctx, domains.ListingFilter{Query: "несуществующее объявление", Limit: 20})
++		require.NoError(t, err)
++		assert.Empty(t, listings)
++		assert.NotNil(t, listings)
++	})
++}
+diff --git a/internal/storage/demo_seed.go b/internal/storage/demo_seed.go
+new file mode 100644
+index 0000000..3becc17
+--- /dev/null
++++ b/internal/storage/demo_seed.go
+@@ -0,0 +1,21 @@
++package storage
++
++import (
++	"context"
++	_ "embed"
++	"fmt"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++//go:embed seeds/demo_listings.sql
++var demoListingsSeed string
++
++// SeedDemoListings populates an empty local demo database. It is deliberately
++// separate from production migrations and is called only by the demo service.
++func SeedDemoListings(ctx context.Context, pool *pgxpool.Pool) error {
++	if _, err := pool.Exec(ctx, demoListingsSeed); err != nil {
++		return fmt.Errorf("seed demo listings: %w", err)
++	}
++	return nil
++}
+diff --git a/internal/storage/seeds/demo_listings.sql b/internal/storage/seeds/demo_listings.sql
+new file mode 100644
+index 0000000..e63566d
+--- /dev/null
++++ b/internal/storage/seeds/demo_listings.sql
+@@ -0,0 +1,9 @@
++INSERT INTO listings (title, description, price, image_url)
++SELECT seed.title, seed.description, seed.price, seed.image_url
++FROM (
++    VALUES
++        ('iPhone 15 Pro', 'Телефон в отличном состоянии, без царапин', 95000, 'https://example.com/iphone.png'),
++        ('Игровое кресло', 'Использовалось полгода, удобная поддержка спины', 15000, 'https://example.com/chair.png'),
++        ('Samsung Galaxy S24', 'Новый телефон в заводской упаковке', 72000, 'https://example.com/samsung.png')
++) AS seed(title, description, price, image_url)
++WHERE NOT EXISTS (SELECT 1 FROM listings);
+diff --git a/migrations/000002_listings.down.sql b/migrations/000002_listings.down.sql
+new file mode 100644
+index 0000000..31fc210
+--- /dev/null
++++ b/migrations/000002_listings.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS listings;
+diff --git a/migrations/000002_listings.up.sql b/migrations/000002_listings.up.sql
+new file mode 100644
+index 0000000..8c79de1
+--- /dev/null
++++ b/migrations/000002_listings.up.sql
+@@ -0,0 +1,8 @@
++CREATE TABLE listings (
++    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
++    title TEXT NOT NULL,
++    description TEXT NOT NULL DEFAULT '',
++    price BIGINT NOT NULL CHECK (price >= 0),
++    image_url TEXT NOT NULL DEFAULT '',
++    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
++);
+-- 
+2.47.1
+

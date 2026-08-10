@@ -1,0 +1,892 @@
+From ec602f073729a94133d050571c4b0217d4d076bf Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Tue, 4 Aug 2026 20:54:57 +0300
+Subject: [PATCH 1/5] feat: add current user mock and handler
+
+---
+ internal/controllers/users/get_user.go     | 20 ++++++++++++++++++++
+ internal/domains/users/user.go             |  7 +++++++
+ internal/models/response/users/get_user.go |  7 +++++++
+ internal/repositories/users/mock.go        | 11 +++++++++++
+ 4 files changed, 45 insertions(+)
+ create mode 100644 internal/controllers/users/get_user.go
+ create mode 100644 internal/domains/users/user.go
+ create mode 100644 internal/models/response/users/get_user.go
+ create mode 100644 internal/repositories/users/mock.go
+
+diff --git a/internal/controllers/users/get_user.go b/internal/controllers/users/get_user.go
+new file mode 100644
+index 0000000..88ccef5
+--- /dev/null
++++ b/internal/controllers/users/get_user.go
+@@ -0,0 +1,20 @@
++package users
++
++import (
++	"encoding/json"
++	"net/http"
++
++	response "github.com/Vanady39/cluer/internal/models/response/users"
++	repo "github.com/Vanady39/cluer/internal/repositories/users"
++)
++
++func GetCurrentUser(w http.ResponseWriter, _ *http.Request) {
++	user := repo.GetMockCurrentUser()
++
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(http.StatusOK)
++
++	_ = json.NewEncoder(w).Encode(response.GetUserResponse{
++		Data: user,
++	})
++}
+diff --git a/internal/domains/users/user.go b/internal/domains/users/user.go
+new file mode 100644
+index 0000000..45c4f68
+--- /dev/null
++++ b/internal/domains/users/user.go
+@@ -0,0 +1,7 @@
++package users
++
++type User struct {
++	ID        int    `json:"id"`
++	Name      string `json:"name"`
++	AvatarURL string `json:"avatarUrl"`
++}
+diff --git a/internal/models/response/users/get_user.go b/internal/models/response/users/get_user.go
+new file mode 100644
+index 0000000..e5728d0
+--- /dev/null
++++ b/internal/models/response/users/get_user.go
+@@ -0,0 +1,7 @@
++package response
++
++import domain "github.com/Vanady39/cluer/internal/domains/users"
++
++type GetUserResponse struct {
++	Data domain.User `json:"data"`
++}
+diff --git a/internal/repositories/users/mock.go b/internal/repositories/users/mock.go
+new file mode 100644
+index 0000000..38ef67e
+--- /dev/null
++++ b/internal/repositories/users/mock.go
+@@ -0,0 +1,11 @@
++package users
++
++import domains "github.com/Vanady39/cluer/internal/domains/users"
++
++func GetMockCurrentUser() domains.User {
++	return domains.User{
++		ID:        1,
++		Name:      "Иванов Иван",
++		AvatarURL: "https://example.com/avatar.png",
++	}
++}
+-- 
+2.47.1
+
+
+From 9b1fb41ced1c4c1cfbf48be194145609fadb6a8c Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Tue, 4 Aug 2026 21:57:52 +0300
+Subject: [PATCH 2/5] implement current user flow with Gin
+
+---
+ go.mod                                        | 34 +++++++
+ go.sum                                        | 89 +++++++++++++++++++
+ internal/controllers/users/get_user.go        | 20 -----
+ internal/controllers/users/handler.go         | 40 +++++++++
+ internal/domains/users/user.go                |  6 +-
+ internal/models/common.go                     |  1 +
+ internal/models/response/error.go             | 10 +++
+ .../models/response/users/get_current_user.go | 23 +++++
+ internal/models/response/users/get_user.go    |  7 --
+ internal/repositories/users/mock.go           | 26 ++++--
+ internal/services/users/service.go            | 23 +++++
+ 11 files changed, 243 insertions(+), 36 deletions(-)
+ create mode 100644 go.sum
+ delete mode 100644 internal/controllers/users/get_user.go
+ create mode 100644 internal/controllers/users/handler.go
+ create mode 100644 internal/models/response/error.go
+ create mode 100644 internal/models/response/users/get_current_user.go
+ delete mode 100644 internal/models/response/users/get_user.go
+ create mode 100644 internal/services/users/service.go
+
+diff --git a/go.mod b/go.mod
+index c9ed8a5..37c2942 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,3 +1,37 @@
+ module github.com/Vanady39/cluer
+ 
+ go 1.26.5
++
++require github.com/gin-gonic/gin v1.12.0
++
++require (
++	github.com/bytedance/gopkg v0.1.3 // indirect
++	github.com/bytedance/sonic v1.15.0 // indirect
++	github.com/bytedance/sonic/loader v0.5.0 // indirect
++	github.com/cloudwego/base64x v0.1.6 // indirect
++	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
++	github.com/gin-contrib/sse v1.1.0 // indirect
++	github.com/go-playground/locales v0.14.1 // indirect
++	github.com/go-playground/universal-translator v0.18.1 // indirect
++	github.com/go-playground/validator/v10 v10.30.1 // indirect
++	github.com/goccy/go-json v0.10.5 // indirect
++	github.com/goccy/go-yaml v1.19.2 // indirect
++	github.com/json-iterator/go v1.1.12 // indirect
++	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
++	github.com/leodido/go-urn v1.4.0 // indirect
++	github.com/mattn/go-isatty v0.0.20 // indirect
++	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
++	github.com/modern-go/reflect2 v1.0.2 // indirect
++	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
++	github.com/quic-go/qpack v0.6.0 // indirect
++	github.com/quic-go/quic-go v0.59.0 // indirect
++	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
++	github.com/ugorji/go/codec v1.3.1 // indirect
++	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
++	golang.org/x/arch v0.22.0 // indirect
++	golang.org/x/crypto v0.48.0 // indirect
++	golang.org/x/net v0.51.0 // indirect
++	golang.org/x/sys v0.41.0 // indirect
++	golang.org/x/text v0.34.0 // indirect
++	google.golang.org/protobuf v1.36.10 // indirect
++)
+diff --git a/go.sum b/go.sum
+new file mode 100644
+index 0000000..3a33231
+--- /dev/null
++++ b/go.sum
+@@ -0,0 +1,89 @@
++github.com/bytedance/gopkg v0.1.3 h1:TPBSwH8RsouGCBcMBktLt1AymVo2TVsBVCY4b6TnZ/M=
++github.com/bytedance/gopkg v0.1.3/go.mod h1:576VvJ+eJgyCzdjS+c4+77QF3p7ubbtiKARP3TxducM=
++github.com/bytedance/sonic v1.15.0 h1:/PXeWFaR5ElNcVE84U0dOHjiMHQOwNIx3K4ymzh/uSE=
++github.com/bytedance/sonic v1.15.0/go.mod h1:tFkWrPz0/CUCLEF4ri4UkHekCIcdnkqXw9VduqpJh0k=
++github.com/bytedance/sonic/loader v0.5.0 h1:gXH3KVnatgY7loH5/TkeVyXPfESoqSBSBEiDd5VjlgE=
++github.com/bytedance/sonic/loader v0.5.0/go.mod h1:AR4NYCk5DdzZizZ5djGqQ92eEhCCcdf5x77udYiSJRo=
++github.com/cloudwego/base64x v0.1.6 h1:t11wG9AECkCDk5fMSoxmufanudBtJ+/HemLstXDLI2M=
++github.com/cloudwego/base64x v0.1.6/go.mod h1:OFcloc187FXDaYHvrNIjxSe8ncn0OOM8gEHfghB2IPU=
++github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
++github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/gabriel-vasile/mimetype v1.4.12 h1:e9hWvmLYvtp846tLHam2o++qitpguFiYCKbn0w9jyqw=
++github.com/gabriel-vasile/mimetype v1.4.12/go.mod h1:d+9Oxyo1wTzWdyVUPMmXFvp4F9tea18J8ufA774AB3s=
++github.com/gin-contrib/sse v1.1.0 h1:n0w2GMuUpWDVp7qSpvze6fAu9iRxJY4Hmj6AmBOU05w=
++github.com/gin-contrib/sse v1.1.0/go.mod h1:hxRZ5gVpWMT7Z0B0gSNYqqsSCNIJMjzvm6fqCz9vjwM=
++github.com/gin-gonic/gin v1.12.0 h1:b3YAbrZtnf8N//yjKeU2+MQsh2mY5htkZidOM7O0wG8=
++github.com/gin-gonic/gin v1.12.0/go.mod h1:VxccKfsSllpKshkBWgVgRniFFAzFb9csfngsqANjnLc=
++github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lYKSsYSR8s=
++github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
++github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
++github.com/go-playground/locales v0.14.1/go.mod h1:hxrqLVvrK65+Rwrd5Fc6F2O76J/NuW9t0sjnWqG1slY=
++github.com/go-playground/universal-translator v0.18.1 h1:Bcnm0ZwsGyWbCzImXv+pAJnYK9S473LQFuzCbDbfSFY=
++github.com/go-playground/universal-translator v0.18.1/go.mod h1:xekY+UJKNuX9WP91TpwSH2VMlDf28Uj24BCp08ZFTUY=
++github.com/go-playground/validator/v10 v10.30.1 h1:f3zDSN/zOma+w6+1Wswgd9fLkdwy06ntQJp0BBvFG0w=
++github.com/go-playground/validator/v10 v10.30.1/go.mod h1:oSuBIQzuJxL//3MelwSLD5hc2Tu889bF0Idm9Dg26cM=
++github.com/goccy/go-json v0.10.5 h1:Fq85nIqj+gXn/S5ahsiTlK3TmC85qgirsdTP/+DeaC4=
++github.com/goccy/go-json v0.10.5/go.mod h1:oq7eo15ShAhp70Anwd5lgX2pLfOS3QCiwU/PULtXL6M=
++github.com/goccy/go-yaml v1.19.2 h1:PmFC1S6h8ljIz6gMRBopkjP1TVT7xuwrButHID66PoM=
++github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7LkFRi1kA=
++github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
++github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
++github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
++github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
++github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
++github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
++github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
++github.com/leodido/go-urn v1.4.0 h1:WT9HwE9SGECu3lg4d/dIA+jxlljEa1/ffXKmRjqdmIQ=
++github.com/leodido/go-urn v1.4.0/go.mod h1:bvxc+MVxLKB4z00jd1z+Dvzr47oO32F/QSNjSBOlFxI=
++github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
++github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
++github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
++github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
++github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
++github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9Gz0M=
++github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
++github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
++github.com/pelletier/go-toml/v2 v2.2.4/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
++github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
++github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
++github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
++github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
++github.com/quic-go/quic-go v0.59.0 h1:OLJkp1Mlm/aS7dpKgTc6cnpynnD2Xg7C1pwL6vy/SAw=
++github.com/quic-go/quic-go v0.59.0/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
++github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
++github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
++github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=
++github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
++github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
++github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
++github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
++github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
++github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
++github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
++github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
++github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
++github.com/ugorji/go/codec v1.3.1 h1:waO7eEiFDwidsBN6agj1vJQ4AG7lh2yqXyOXqhgQuyY=
++github.com/ugorji/go/codec v1.3.1/go.mod h1:pRBVtBSKl77K30Bv8R2P+cLSGaTtex6fsA2Wjqmfxj4=
++go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
++go.mongodb.org/mongo-driver/v2 v2.5.0/go.mod h1:yOI9kBsufol30iFsl1slpdq1I0eHPzybRWdyYUs8K/0=
++go.uber.org/mock v0.6.0 h1:hyF9dfmbgIX5EfOdasqLsWD6xqpNZlXblLB/Dbnwv3Y=
++go.uber.org/mock v0.6.0/go.mod h1:KiVJ4BqZJaMj4svdfmHM0AUx4NJYO8ZNpPnZn1Z+BBU=
++golang.org/x/arch v0.22.0 h1:c/Zle32i5ttqRXjdLyyHZESLD/bB90DCU1g9l/0YBDI=
++golang.org/x/arch v0.22.0/go.mod h1:dNHoOeKiyja7GTvF9NJS1l3Z2yntpQNzgrjh1cU103A=
++golang.org/x/crypto v0.48.0 h1:/VRzVqiRSggnhY7gNRxPauEQ5Drw9haKdM0jqfcCFts=
++golang.org/x/crypto v0.48.0/go.mod h1:r0kV5h3qnFPlQnBSrULhlsRfryS2pmewsg+XfMgkVos=
++golang.org/x/net v0.51.0 h1:94R/GTO7mt3/4wIKpcR5gkGmRLOuE/2hNGeWq/GBIFo=
++golang.org/x/net v0.51.0/go.mod h1:aamm+2QF5ogm02fjy5Bb7CQ0WMt1/WVM7FtyaTLlA9Y=
++golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=
++golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
++golang.org/x/text v0.34.0 h1:oL/Qq0Kdaqxa1KbNeMKwQq0reLCCaFtqu2eNuSeNHbk=
++golang.org/x/text v0.34.0/go.mod h1:homfLqTYRFyVYemLBFl5GgL/DWEiH5wcsQ5gSh1yziA=
++google.golang.org/protobuf v1.36.10 h1:AYd7cD/uASjIL6Q9LiTjz8JLcrh/88q5UObnmY3aOOE=
++google.golang.org/protobuf v1.36.10/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
++gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
++gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
++gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
++gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+diff --git a/internal/controllers/users/get_user.go b/internal/controllers/users/get_user.go
+deleted file mode 100644
+index 88ccef5..0000000
+--- a/internal/controllers/users/get_user.go
++++ /dev/null
+@@ -1,20 +0,0 @@
+-package users
+-
+-import (
+-	"encoding/json"
+-	"net/http"
+-
+-	response "github.com/Vanady39/cluer/internal/models/response/users"
+-	repo "github.com/Vanady39/cluer/internal/repositories/users"
+-)
+-
+-func GetCurrentUser(w http.ResponseWriter, _ *http.Request) {
+-	user := repo.GetMockCurrentUser()
+-
+-	w.Header().Set("Content-Type", "application/json")
+-	w.WriteHeader(http.StatusOK)
+-
+-	_ = json.NewEncoder(w).Encode(response.GetUserResponse{
+-		Data: user,
+-	})
+-}
+diff --git a/internal/controllers/users/handler.go b/internal/controllers/users/handler.go
+new file mode 100644
+index 0000000..14d445b
+--- /dev/null
++++ b/internal/controllers/users/handler.go
+@@ -0,0 +1,40 @@
++package users
++
++import (
++	"context"
++	"net/http"
++
++	"github.com/gin-gonic/gin"
++
++	domainusers "github.com/Vanady39/cluer/internal/domains/users"
++	apiresponse "github.com/Vanady39/cluer/internal/models/response"
++	userresponse "github.com/Vanady39/cluer/internal/models/response/users"
++)
++
++type Service interface {
++	GetCurrentUser(ctx context.Context) (domainusers.User, error)
++}
++
++type Handler struct {
++	service Service
++}
++
++func New(service Service) *Handler {
++	return &Handler{service: service}
++}
++
++func (h *Handler) GetCurrentUser(c *gin.Context) {
++	user, err := h.service.GetCurrentUser(c.Request.Context())
++	if err != nil {
++		c.JSON(http.StatusInternalServerError, apiresponse.ErrorResponse{
++			Error: apiresponse.Error{
++				Code:    "INTERNAL_ERROR",
++				Message: "Не удалось получить пользователя",
++			},
++		})
++
++		return
++	}
++
++	c.JSON(http.StatusOK, userresponse.NewGetCurrentUserResponse(user))
++}
+diff --git a/internal/domains/users/user.go b/internal/domains/users/user.go
+index 45c4f68..fa70582 100644
+--- a/internal/domains/users/user.go
++++ b/internal/domains/users/user.go
+@@ -1,7 +1,7 @@
+ package users
+ 
+ type User struct {
+-	ID        int    `json:"id"`
+-	Name      string `json:"name"`
+-	AvatarURL string `json:"avatarUrl"`
++	ID        int64
++	Name      string
++	AvatarURL string
+ }
+diff --git a/internal/models/common.go b/internal/models/common.go
+index e69de29..2640e7f 100644
+--- a/internal/models/common.go
++++ b/internal/models/common.go
+@@ -0,0 +1 @@
++package models
+diff --git a/internal/models/response/error.go b/internal/models/response/error.go
+new file mode 100644
+index 0000000..a09dee6
+--- /dev/null
++++ b/internal/models/response/error.go
+@@ -0,0 +1,10 @@
++package response
++
++type Error struct {
++	Code    string `json:"code"`
++	Message string `json:"message"`
++}
++
++type ErrorResponse struct {
++	Error Error `json:"error"`
++}
+diff --git a/internal/models/response/users/get_current_user.go b/internal/models/response/users/get_current_user.go
+new file mode 100644
+index 0000000..8d87520
+--- /dev/null
++++ b/internal/models/response/users/get_current_user.go
+@@ -0,0 +1,23 @@
++package users
++
++import domainusers "github.com/Vanady39/cluer/internal/domains/users"
++
++type User struct {
++	ID        int64  `json:"id"`
++	Name      string `json:"name"`
++	AvatarURL string `json:"avatarUrl"`
++}
++
++type GetCurrentUserResponse struct {
++	Data User `json:"data"`
++}
++
++func NewGetCurrentUserResponse(user domainusers.User) GetCurrentUserResponse {
++	return GetCurrentUserResponse{
++		Data: User{
++			ID:        user.ID,
++			Name:      user.Name,
++			AvatarURL: user.AvatarURL,
++		},
++	}
++}
+diff --git a/internal/models/response/users/get_user.go b/internal/models/response/users/get_user.go
+deleted file mode 100644
+index e5728d0..0000000
+--- a/internal/models/response/users/get_user.go
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package response
+-
+-import domain "github.com/Vanady39/cluer/internal/domains/users"
+-
+-type GetUserResponse struct {
+-	Data domain.User `json:"data"`
+-}
+diff --git a/internal/repositories/users/mock.go b/internal/repositories/users/mock.go
+index 38ef67e..9a224d7 100644
+--- a/internal/repositories/users/mock.go
++++ b/internal/repositories/users/mock.go
+@@ -1,11 +1,25 @@
+ package users
+ 
+-import domains "github.com/Vanady39/cluer/internal/domains/users"
++import (
++	"context"
+ 
+-func GetMockCurrentUser() domains.User {
+-	return domains.User{
+-		ID:        1,
+-		Name:      "Иванов Иван",
+-		AvatarURL: "https://example.com/avatar.png",
++	domainusers "github.com/Vanady39/cluer/internal/domains/users"
++)
++
++type MockRepository struct {
++	user domainusers.User
++}
++
++func NewMockRepository() *MockRepository {
++	return &MockRepository{
++		user: domainusers.User{
++			ID:        1,
++			Name:      "Иванов Иван",
++			AvatarURL: "https://example.com/avatar.png",
++		},
+ 	}
+ }
++
++func (r *MockRepository) GetCurrentUser(_ context.Context) (domainusers.User, error) {
++	return r.user, nil
++}
+diff --git a/internal/services/users/service.go b/internal/services/users/service.go
+new file mode 100644
+index 0000000..edfc0fe
+--- /dev/null
++++ b/internal/services/users/service.go
+@@ -0,0 +1,23 @@
++package users
++
++import (
++	"context"
++
++	domainusers "github.com/Vanady39/cluer/internal/domains/users"
++)
++
++type Repository interface {
++	GetCurrentUser(ctx context.Context) (domainusers.User, error)
++}
++
++type Service struct {
++	repository Repository
++}
++
++func New(repository Repository) *Service {
++	return &Service{repository: repository}
++}
++
++func (s *Service) GetCurrentUser(ctx context.Context) (domainusers.User, error) {
++	return s.repository.GetCurrentUser(ctx)
++}
+-- 
+2.47.1
+
+
+From 162418bb7f9533c11239c974012cc147de3dccd3 Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Wed, 5 Aug 2026 00:01:25 +0300
+Subject: [PATCH 3/5] move user service contracts to domain
+
+---
+ internal/controllers/users/handler.go |  9 ++-------
+ internal/domains/users/repository.go  |  7 +++++++
+ internal/domains/users/service.go     | 19 +++++++++++++++++++
+ internal/services/users/service.go    | 23 -----------------------
+ 4 files changed, 28 insertions(+), 30 deletions(-)
+ create mode 100644 internal/domains/users/repository.go
+ create mode 100644 internal/domains/users/service.go
+ delete mode 100644 internal/services/users/service.go
+
+diff --git a/internal/controllers/users/handler.go b/internal/controllers/users/handler.go
+index 14d445b..a069d4a 100644
+--- a/internal/controllers/users/handler.go
++++ b/internal/controllers/users/handler.go
+@@ -1,7 +1,6 @@
+ package users
+ 
+ import (
+-	"context"
+ 	"net/http"
+ 
+ 	"github.com/gin-gonic/gin"
+@@ -11,15 +10,11 @@ import (
+ 	userresponse "github.com/Vanady39/cluer/internal/models/response/users"
+ )
+ 
+-type Service interface {
+-	GetCurrentUser(ctx context.Context) (domainusers.User, error)
+-}
+-
+ type Handler struct {
+-	service Service
++	service domainusers.Service
+ }
+ 
+-func New(service Service) *Handler {
++func New(service domainusers.Service) *Handler {
+ 	return &Handler{service: service}
+ }
+ 
+diff --git a/internal/domains/users/repository.go b/internal/domains/users/repository.go
+new file mode 100644
+index 0000000..bc4b044
+--- /dev/null
++++ b/internal/domains/users/repository.go
+@@ -0,0 +1,7 @@
++package users
++
++import "context"
++
++type Repository interface {
++	GetCurrentUser(ctx context.Context) (User, error)
++}
+diff --git a/internal/domains/users/service.go b/internal/domains/users/service.go
+new file mode 100644
+index 0000000..ccc4f0b
+--- /dev/null
++++ b/internal/domains/users/service.go
+@@ -0,0 +1,19 @@
++package users
++
++import "context"
++
++type Service interface {
++	GetCurrentUser(ctx context.Context) (User, error)
++}
++
++type service struct {
++	repository Repository
++}
++
++func NewService(repository Repository) Service {
++	return &service{repository: repository}
++}
++
++func (s *service) GetCurrentUser(ctx context.Context) (User, error) {
++	return s.repository.GetCurrentUser(ctx)
++}
+diff --git a/internal/services/users/service.go b/internal/services/users/service.go
+deleted file mode 100644
+index edfc0fe..0000000
+--- a/internal/services/users/service.go
++++ /dev/null
+@@ -1,23 +0,0 @@
+-package users
+-
+-import (
+-	"context"
+-
+-	domainusers "github.com/Vanady39/cluer/internal/domains/users"
+-)
+-
+-type Repository interface {
+-	GetCurrentUser(ctx context.Context) (domainusers.User, error)
+-}
+-
+-type Service struct {
+-	repository Repository
+-}
+-
+-func New(repository Repository) *Service {
+-	return &Service{repository: repository}
+-}
+-
+-func (s *Service) GetCurrentUser(ctx context.Context) (domainusers.User, error) {
+-	return s.repository.GetCurrentUser(ctx)
+-}
+-- 
+2.47.1
+
+
+From b43257261e7821c3cb7f77634e9e0b71052bfb6e Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Wed, 5 Aug 2026 00:31:50 +0300
+Subject: [PATCH 4/5] align user module naming conventions
+
+---
+ .../users/{handler.go => user_handler.go}     | 10 +++++-----
+ internal/domains/users/service.go             | 19 -------------------
+ .../domains/users/{user.go => user_entity.go} |  0
+ .../{repository.go => user_repository.go}     |  2 +-
+ internal/domains/users/user_service.go        | 19 +++++++++++++++++++
+ .../users/{mock.go => user_repository.go}     |  8 ++++----
+ 6 files changed, 29 insertions(+), 29 deletions(-)
+ rename internal/controllers/users/{handler.go => user_handler.go} (74%)
+ delete mode 100644 internal/domains/users/service.go
+ rename internal/domains/users/{user.go => user_entity.go} (100%)
+ rename internal/domains/users/{repository.go => user_repository.go} (72%)
+ create mode 100644 internal/domains/users/user_service.go
+ rename internal/repositories/users/{mock.go => user_repository.go} (66%)
+
+diff --git a/internal/controllers/users/handler.go b/internal/controllers/users/user_handler.go
+similarity index 74%
+rename from internal/controllers/users/handler.go
+rename to internal/controllers/users/user_handler.go
+index a069d4a..940f670 100644
+--- a/internal/controllers/users/handler.go
++++ b/internal/controllers/users/user_handler.go
+@@ -10,15 +10,15 @@ import (
+ 	userresponse "github.com/Vanady39/cluer/internal/models/response/users"
+ )
+ 
+-type Handler struct {
+-	service domainusers.Service
++type UserHandler struct {
++	service domainusers.UserService
+ }
+ 
+-func New(service domainusers.Service) *Handler {
+-	return &Handler{service: service}
++func NewUserHandler(service domainusers.UserService) *UserHandler {
++	return &UserHandler{service: service}
+ }
+ 
+-func (h *Handler) GetCurrentUser(c *gin.Context) {
++func (h *UserHandler) GetCurrentUser(c *gin.Context) {
+ 	user, err := h.service.GetCurrentUser(c.Request.Context())
+ 	if err != nil {
+ 		c.JSON(http.StatusInternalServerError, apiresponse.ErrorResponse{
+diff --git a/internal/domains/users/service.go b/internal/domains/users/service.go
+deleted file mode 100644
+index ccc4f0b..0000000
+--- a/internal/domains/users/service.go
++++ /dev/null
+@@ -1,19 +0,0 @@
+-package users
+-
+-import "context"
+-
+-type Service interface {
+-	GetCurrentUser(ctx context.Context) (User, error)
+-}
+-
+-type service struct {
+-	repository Repository
+-}
+-
+-func NewService(repository Repository) Service {
+-	return &service{repository: repository}
+-}
+-
+-func (s *service) GetCurrentUser(ctx context.Context) (User, error) {
+-	return s.repository.GetCurrentUser(ctx)
+-}
+diff --git a/internal/domains/users/user.go b/internal/domains/users/user_entity.go
+similarity index 100%
+rename from internal/domains/users/user.go
+rename to internal/domains/users/user_entity.go
+diff --git a/internal/domains/users/repository.go b/internal/domains/users/user_repository.go
+similarity index 72%
+rename from internal/domains/users/repository.go
+rename to internal/domains/users/user_repository.go
+index bc4b044..4e62d96 100644
+--- a/internal/domains/users/repository.go
++++ b/internal/domains/users/user_repository.go
+@@ -2,6 +2,6 @@ package users
+ 
+ import "context"
+ 
+-type Repository interface {
++type UserRepository interface {
+ 	GetCurrentUser(ctx context.Context) (User, error)
+ }
+diff --git a/internal/domains/users/user_service.go b/internal/domains/users/user_service.go
+new file mode 100644
+index 0000000..57b735f
+--- /dev/null
++++ b/internal/domains/users/user_service.go
+@@ -0,0 +1,19 @@
++package users
++
++import "context"
++
++type UserService interface {
++	GetCurrentUser(ctx context.Context) (User, error)
++}
++
++type userService struct {
++	repository UserRepository
++}
++
++func NewUserService(repository UserRepository) UserService {
++	return &userService{repository: repository}
++}
++
++func (s *userService) GetCurrentUser(ctx context.Context) (User, error) {
++	return s.repository.GetCurrentUser(ctx)
++}
+diff --git a/internal/repositories/users/mock.go b/internal/repositories/users/user_repository.go
+similarity index 66%
+rename from internal/repositories/users/mock.go
+rename to internal/repositories/users/user_repository.go
+index 9a224d7..5f21b28 100644
+--- a/internal/repositories/users/mock.go
++++ b/internal/repositories/users/user_repository.go
+@@ -6,12 +6,12 @@ import (
+ 	domainusers "github.com/Vanady39/cluer/internal/domains/users"
+ )
+ 
+-type MockRepository struct {
++type UserRepository struct {
+ 	user domainusers.User
+ }
+ 
+-func NewMockRepository() *MockRepository {
+-	return &MockRepository{
++func NewUserRepository() *UserRepository {
++	return &UserRepository{
+ 		user: domainusers.User{
+ 			ID:        1,
+ 			Name:      "Иванов Иван",
+@@ -20,6 +20,6 @@ func NewMockRepository() *MockRepository {
+ 	}
+ }
+ 
+-func (r *MockRepository) GetCurrentUser(_ context.Context) (domainusers.User, error) {
++func (r *UserRepository) GetCurrentUser(_ context.Context) (domainusers.User, error) {
+ 	return r.user, nil
+ }
+-- 
+2.47.1
+
+
+From 8818560ef0fb8bfb93a9ee10f96d2fd76a835b0f Mon Sep 17 00:00:00 2001
+From: Rodion <sabalinrodion69@gmail.com>
+Date: Wed, 5 Aug 2026 15:51:38 +0300
+Subject: [PATCH 5/5] add unit tests for current user retrieval
+
+---
+ .../controllers/users/user_handler_test.go    | 81 +++++++++++++++++++
+ internal/domains/users/user_service_test.go   | 44 ++++++++++
+ 2 files changed, 125 insertions(+)
+ create mode 100644 internal/controllers/users/user_handler_test.go
+ create mode 100644 internal/domains/users/user_service_test.go
+
+diff --git a/internal/controllers/users/user_handler_test.go b/internal/controllers/users/user_handler_test.go
+new file mode 100644
+index 0000000..4447ebb
+--- /dev/null
++++ b/internal/controllers/users/user_handler_test.go
+@@ -0,0 +1,81 @@
++package users
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++
++	domainusers "github.com/Vanady39/cluer/internal/domains/users"
++	apiresponse "github.com/Vanady39/cluer/internal/models/response"
++	userresponse "github.com/Vanady39/cluer/internal/models/response/users"
++)
++
++type userServiceStub struct {
++	user domainusers.User
++	err  error
++}
++
++func (s userServiceStub) GetCurrentUser(context.Context) (domainusers.User, error) {
++	return s.user, s.err
++}
++
++func TestUserHandlerGetCurrentUser(t *testing.T) {
++	expected := domainusers.User{
++		ID:        1,
++		Name:      "Иванов Иван",
++		AvatarURL: "https://example.com/avatar.png",
++	}
++	handler := NewUserHandler(userServiceStub{user: expected})
++	ginContext, recorder := newUserGinTestContext()
++
++	handler.GetCurrentUser(ginContext)
++
++	if recorder.Code != http.StatusOK {
++		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
++	}
++
++	var actual userresponse.GetCurrentUserResponse
++	if err := json.NewDecoder(recorder.Body).Decode(&actual); err != nil {
++		t.Fatalf("decode response: %v", err)
++	}
++
++	expectedResponse := userresponse.NewGetCurrentUserResponse(expected)
++	if actual != expectedResponse {
++		t.Fatalf("response = %#v, want %#v", actual, expectedResponse)
++	}
++}
++
++func TestUserHandlerGetCurrentUserReturnsInternalError(t *testing.T) {
++	handler := NewUserHandler(userServiceStub{err: errors.New("service error")})
++	ginContext, recorder := newUserGinTestContext()
++
++	handler.GetCurrentUser(ginContext)
++
++	if recorder.Code != http.StatusInternalServerError {
++		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
++	}
++
++	var actual apiresponse.ErrorResponse
++	if err := json.NewDecoder(recorder.Body).Decode(&actual); err != nil {
++		t.Fatalf("decode response: %v", err)
++	}
++
++	if actual.Error.Code != "INTERNAL_ERROR" {
++		t.Fatalf("error code = %q, want %q", actual.Error.Code, "INTERNAL_ERROR")
++	}
++}
++
++func newUserGinTestContext() (*gin.Context, *httptest.ResponseRecorder) {
++	gin.SetMode(gin.TestMode)
++
++	recorder := httptest.NewRecorder()
++	ginContext, _ := gin.CreateTestContext(recorder)
++	ginContext.Request = httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
++
++	return ginContext, recorder
++}
+diff --git a/internal/domains/users/user_service_test.go b/internal/domains/users/user_service_test.go
+new file mode 100644
+index 0000000..18592ac
+--- /dev/null
++++ b/internal/domains/users/user_service_test.go
+@@ -0,0 +1,44 @@
++package users
++
++import (
++	"context"
++	"errors"
++	"testing"
++)
++
++type userRepositoryStub struct {
++	user User
++	err  error
++}
++
++func (s userRepositoryStub) GetCurrentUser(context.Context) (User, error) {
++	return s.user, s.err
++}
++
++func TestUserServiceGetCurrentUser(t *testing.T) {
++	expected := User{
++		ID:        1,
++		Name:      "Иванов Иван",
++		AvatarURL: "https://example.com/avatar.png",
++	}
++	service := NewUserService(userRepositoryStub{user: expected})
++
++	actual, err := service.GetCurrentUser(context.Background())
++	if err != nil {
++		t.Fatalf("GetCurrentUser() returned an unexpected error: %v", err)
++	}
++
++	if actual != expected {
++		t.Fatalf("GetCurrentUser() = %#v, want %#v", actual, expected)
++	}
++}
++
++func TestUserServiceGetCurrentUserReturnsRepositoryError(t *testing.T) {
++	expectedErr := errors.New("repository error")
++	service := NewUserService(userRepositoryStub{err: expectedErr})
++
++	_, err := service.GetCurrentUser(context.Background())
++	if !errors.Is(err, expectedErr) {
++		t.Fatalf("GetCurrentUser() error = %v, want %v", err, expectedErr)
++	}
++}
+-- 
+2.47.1
+
